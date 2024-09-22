@@ -53,13 +53,10 @@ fn get_http_client() -> Client {
 static LOAD_ARGS: OnceLock<LoadTrafficArgs> = OnceLock::new();
 
 fn max_retry() -> u64 {
-    LOAD_ARGS.get().expect("Max retry must be set").max_retry as u64
+    1
 }
 fn backoff_ms() -> u64 {
-    LOAD_ARGS
-        .get()
-        .expect("Backoff time must be set")
-        .backoff_ms as u64
+    0
 }
 fn traffic_concurrency() -> u64 {
     LOAD_ARGS
@@ -73,7 +70,9 @@ fn max_loop() -> u64 {
         .expect("Loop account must be set")
         .loop_count as u64
 }
-
+fn mode() -> u64 {
+    LOAD_ARGS.get().expect("Mode must be set").mode as u64
+}
 #[derive(Debug, Args, Clone)]
 pub struct LoadTrafficArgs {
     #[arg(short, long)]
@@ -87,12 +86,6 @@ pub struct LoadTrafficArgs {
     /// Traffic loop count.
     #[arg(short, long, default_value_t = i64::MAX, value_parser = 1..)]
     pub loop_count: i64,
-    /// Maximum retry count for each action.
-    #[arg(short, long, default_value_t = 1, value_parser = 1..)]
-    pub max_retry: i64,
-    /// Minimum backoff time in milliseconds if there are failures.
-    #[arg(short, long, default_value_t = 0, value_parser = 0..)]
-    pub backoff_ms: i64,
     /// Number of clients to be used for HTTP requests. For high concurrency,
     /// if the bottleneck is the client, increase this number.
     #[arg(short, long, default_value_t = 1, value_parser = 1..)]
@@ -105,6 +98,13 @@ pub struct LoadTrafficArgs {
     /// but smaller than wait_time.
     #[arg(short, long, default_value_t = 10, value_parser = 1..)]
     pub pool_idle_timeout: i64,
+
+    /// Traffic mode:
+    /// 0 - post simulation and get resource
+    /// 1 - post simulation only
+    /// 2 - get resource only
+    #[arg(short, long, default_value_t = 0, value_parser = 0..3)]
+    pub mode: i64,
 }
 
 impl LoadTrafficArgs {
@@ -185,51 +185,45 @@ impl TrafficLoader {
                 })
                 .collect::<Vec<_>>();
             let now = Instant::now();
+            let mut task_handles = Vec::new();
 
-            let t1 = tokio::spawn(async move {
-                let _responses = run_concurrent_actions(
-                    requests,
-                    post_simulate_request,
-                    max_retry(),
-                    backoff_ms(),
-                    "Submitting traffic transactions",
-                )
-                .await;
-                // println!("All response statuses: {statuses:?}", statuses = responses.iter().map(|(_, r)| r.status()).collect::<Vec<_>>());
-            });
-            let t2 = tokio::spawn(async move {
-                let requests = (0..traffic_concurrency())
-                    .map(|_| src_account)
-                    .collect::<Vec<_>>();
-                let _responses = run_concurrent_actions(
-                    requests,
-                    get_account_resources,
-                    max_retry(),
-                    backoff_ms(),
-                    "Getting account resources",
-                )
-                .await;
-            });
-            let t3 = tokio::spawn(async move {
-                let requests = (0..traffic_concurrency())
-                    .map(|_| {
-                        (
-                            src_account,
-                            "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>",
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let _responses = run_concurrent_actions(
-                    requests,
-                    get_account_resource_by_tag,
-                    max_retry(),
-                    backoff_ms(),
-                    "Getting account resource",
-                )
-                .await;
-            });
+            if mode() == 0 || mode() == 1 {
+                task_handles.push(tokio::spawn(async move {
+                    let _responses = run_concurrent_actions(
+                        requests,
+                        post_simulate_request,
+                        max_retry(),
+                        backoff_ms(),
+                        "Submitting traffic transactions",
+                    )
+                    .await;
+                    // println!("All response statuses: {statuses:?}", statuses = responses.iter().map(|(_, r)| r.status()).collect::<Vec<_>>());
+                }));
+            }
+            if mode() == 0 || mode() == 2 {
+                task_handles.push(tokio::spawn(async move {
+                    let requests = (0..traffic_concurrency())
+                        .map(|_| {
+                            (
+                                src_account,
+                                "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>",
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let _responses = run_concurrent_actions(
+                        requests,
+                        get_account_resource_by_tag,
+                        max_retry(),
+                        backoff_ms(),
+                        "Getting account resource",
+                    )
+                    .await;
+                }))
+            };
 
-            let _ = tokio::join!(t1, t2, t3);
+            for handle in task_handles {
+                let _ = handle.await;
+            }
 
             println!(
                 "Loop {loop_count}: traffic transactions take {d} ms",
@@ -378,12 +372,6 @@ fn create_simulate_request(
         user_transaction_request,
         signature: TransactionSignature::Ed25519Signature(signature),
     }
-}
-
-async fn get_account_resources(account: AccountAddress) -> Result<(AccountAddress, Response)> {
-    let url = format!("/v1/accounts/{}/resources", account.to_standard_string());
-    let (_, response) = get_request(url).await?;
-    Ok((account, response))
 }
 
 async fn get_account_resource_by_tag(
