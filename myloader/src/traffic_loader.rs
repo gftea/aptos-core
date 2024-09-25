@@ -205,7 +205,7 @@ impl TrafficLoader {
                     let requests = (0..traffic_concurrency())
                         .map(|_| {
                             (
-                                src_account,
+                                AccountAddress::from_str_strict(DESTINATION_ACCOUNT_ADDRESS).unwrap(),
                                 "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>",
                             )
                         })

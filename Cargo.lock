@@ -11702,6 +11702,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "myloader"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aptos-api-types",
+ "aptos-cached-packages",
+ "aptos-crypto",
+ "aptos-types",
+ "clap 4.4.14",
+ "futures",
+ "reqwest 0.11.23",
+ "serde_json",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
 name = "nalgebra"
 version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
